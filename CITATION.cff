@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use this project, please cite it as follows."
+title: "SmolLM Alignment Lab"
+type: software
+authors:
+  - family-names: Shafique
+    given-names: Ayesha
+repository-code: "https://github.com/Aisha630/smollm-alignment-lab"
+license: MIT
+version: 0.1.0
+date-released: 2026-08-20
