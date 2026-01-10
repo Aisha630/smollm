@@ -105,9 +105,3 @@ The implementation favors explicit, inspectable model mechanics while enforcing 
 - Hu et al., [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)
 - Rafailov et al., [Direct Preference Optimization](https://arxiv.org/abs/2305.18290)
 - Su et al., [RoFormer: Enhanced Transformer with Rotary Position Embedding](https://arxiv.org/abs/2104.09864)
-
-## Author
-
-**Ayesha Shafique** — MS/PhD Computer Science, University of Wisconsin–Madison
-
-[GitHub](https://github.com/Aisha630)
