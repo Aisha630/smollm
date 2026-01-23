@@ -2305,7 +2305,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
-    { name = "torch", specifier = ">=2.2" },
+    { name = "torch", specifier = ">=2.5" },
     { name = "tqdm", marker = "extra == 'train'", specifier = ">=4.66" },
     { name = "transformers", marker = "extra == 'train'", specifier = ">=4.45,<5" },
 ]

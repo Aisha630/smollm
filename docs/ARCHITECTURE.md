@@ -18,6 +18,14 @@ Nine query heads share three key/value heads. Repeating each KV head three times
 
 Rotary positional embeddings are applied to queries and keys before KV repetition. A lower-triangular causal mask is combined with the caller's padding mask, so no token can attend to future or padded key positions.
 
+The optimized backend delegates attention to PyTorch scaled-dot-product attention with native GQA. It passes the three KV heads directly to the fused kernel instead of materializing nine repeated KV heads. The eager backend remains available as a transparent numerical reference.
+
+## Incremental decoding
+
+Each decoder layer can return its rotated keys and values as a cache. During generation, the prompt is processed once; subsequent steps project only the newest token and attend over the cached context. Cache-aware position IDs preserve RoPE semantics, and explicit causal masks handle the asymmetric single-query/multi-key decode shape.
+
+Cached and uncached generation are required to produce identical token sequences in the test suite. The cache stores three KV heads per layer rather than nine expanded heads, preserving the memory advantage of grouped-query attention.
+
 ## Parameter-efficient adaptation
 
 For a frozen projection `W`, LoRA learns two matrices with rank `r`:

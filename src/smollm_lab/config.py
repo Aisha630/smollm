@@ -15,6 +15,7 @@ class SmolLMConfig:
     rope_theta: float = 10_000.0
     rms_norm_eps: float = 1e-5
     tie_word_embeddings: bool = True
+    attention_backend: str = "eager"
 
     def __post_init__(self) -> None:
         if self.hidden_size % self.num_attention_heads:
@@ -34,6 +35,8 @@ class SmolLMConfig:
         )
         if any(value <= 0 for value in positive_fields):
             raise ValueError("model dimensions must be positive")
+        if self.attention_backend not in {"eager", "sdpa"}:
+            raise ValueError("attention_backend must be 'eager' or 'sdpa'")
 
     @property
     def head_dim(self) -> int:
