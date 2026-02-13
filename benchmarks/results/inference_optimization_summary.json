@@ -1,0 +1,12 @@
+{
+  "baseline": "inference_eager_no_cache_fp32.json",
+  "decode_latency_reduction_percent": 88.24139304083548,
+  "decode_speedup": 8.504408757540881,
+  "driver_memory_reduction_percent": 69.66209048273195,
+  "mixed_precision_driver_memory_reduction_percent": 22.091793177684572,
+  "mixed_precision_model_memory_reduction_percent": 49.99745461483089,
+  "optimized": "inference_sdpa_kv_cache_compiled_fp32.json",
+  "output_identical": true,
+  "prefill_latency_reduction_percent": 31.91702910061044,
+  "prefill_speedup": 1.468796068664163
+}

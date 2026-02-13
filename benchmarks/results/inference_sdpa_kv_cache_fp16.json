@@ -1,0 +1,46 @@
+{
+  "attention_backend": "sdpa",
+  "compiled": false,
+  "decode_median_seconds": 0.4474964172113687,
+  "decode_samples_seconds": [
+    0.6250666670966893,
+    0.46018191683106124,
+    0.4474964172113687,
+    0.4390085830818862,
+    0.4376991249155253,
+    0.44648916693404317,
+    0.473137040855363
+  ],
+  "decode_tokens_per_second": 143.01790481100207,
+  "device": "mps",
+  "dtype": "float16",
+  "generated_token_sha256": "bd4ca8be5edd3ef696c356dd3b781f5d99fce24028842a7ee80b222ffbb61172",
+  "mode": "sdpa_kv_cache",
+  "model_id": "HuggingFaceTB/SmolLM-135M",
+  "model_memory": {
+    "allocated_mib": 256.585693359375,
+    "driver_mib": 1080.46875
+  },
+  "model_revision": "1d461723eec654e65efdc40cf49301c89c0c92f4",
+  "new_tokens": 64,
+  "post_benchmark_memory": {
+    "allocated_mib": 256.59033203125,
+    "driver_mib": 1311.828125
+  },
+  "prefill_median_seconds": 0.02724341698922217,
+  "prefill_samples_seconds": [
+    0.026987124932929873,
+    0.02733287517912686,
+    0.027570209000259638,
+    0.02724341698922217,
+    0.02736070891842246,
+    0.027188708074390888,
+    0.026657167123630643
+  ],
+  "prefill_tokens_per_second": 9396.765468196472,
+  "prompt_tokens": 256,
+  "repetitions": 7,
+  "torch_version": "2.13.0",
+  "use_kv_cache": true,
+  "warmup": 3
+}

@@ -26,17 +26,35 @@ The core architecture is implemented directly in PyTorch: RMSNorm, rotary positi
 
 | Stage            |                               Result | Evaluation setup                                       |
 | ---------------- | -----------------------------------: | ------------------------------------------------------ |
+| Reference parity |          Perplexity: 33.7002 = 33.7002 | 8,160 WikiText-2 predictions; 100% top-1 agreement     |
+| Inference optimization |             8.50× decode throughput | SDPA + native GQA + KV cache + compilation             |
 | LoRA fine-tuning | 990,720 trainable parameters (0.73%) | Rank 4 adapters across attention and MLP projections   |
 | LoRA validation  |               Best perplexity: 22.15 | 3,000-example Dolly subset; best checkpoint at epoch 2 |
 | DPO alignment    |      Preference accuracy: 76% → 87% | 100-example held-out preference split                  |
 | GEC alignment    |               BLEU: 0.4722 → 0.4808 | 485-example CoEdIT validation split, SFT → DPO        |
 
-Results were produced in GPU-backed training runs with fixed evaluation splits. See [Benchmarks](docs/BENCHMARKS.md) for configurations, per-epoch metrics, and evaluation scope.
+Metrics use fixed evaluation splits. Training runs used GPU acceleration, and reference parity was independently verified on both CPU and Apple MPS. See [Benchmarks](docs/BENCHMARKS.md) for configurations, per-epoch metrics, and evaluation scope.
+
+Reproduce the reference parity comparison with:
+
+```bash
+uv sync --extra train
+uv run python benchmarks/reference_parity.py
+```
+
+Reproduce the inference benchmark with:
+
+```bash
+uv run python benchmarks/inference_performance.py --mode eager_no_cache
+uv run python benchmarks/inference_performance.py --mode sdpa_kv_cache --compile
+```
 
 ## Engineering highlights
 
 - Device-safe rotary embeddings and combined causal/padding masks
-- Grouped-query attention with three KV heads shared across nine query heads
+- Fused SDPA with native grouped-query attention, avoiding materialized KV-head copies
+- Per-layer KV caching for incremental autoregressive decoding
+- Optional `torch.compile` and float16 inference paths with output-parity checks
 - Weight tying between token embeddings and the language-model head
 - LoRA injection by module name, frozen-base training, and numerically verified merge/unload
 - DPO over response tokens only, excluding prompt and padding tokens from sequence likelihoods
@@ -91,6 +109,7 @@ src/smollm_lab/
 ├── generation.py    # Greedy autoregressive decoding
 └── cli.py           # CPU-friendly smoke test
 tests/               # Behavioral and numerical tests
+benchmarks/          # Reproducible reference-parity runner and results
 docs/                # Architecture and benchmark details
 ```
 
