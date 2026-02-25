@@ -13,6 +13,13 @@ from smollm_lab.config import SmolLMConfig
 class CausalLMOutput:
     logits: Tensor
     loss: Tensor | None = None
+    past_key_values: tuple[tuple[Tensor, Tensor], ...] | None = None
+
+
+@dataclass
+class BaseModelOutput:
+    last_hidden_state: Tensor
+    past_key_values: tuple[tuple[Tensor, Tensor], ...] | None = None
 
 
 class RMSNorm(nn.Module):
@@ -78,19 +85,26 @@ def repeat_kv(hidden_states: Tensor, repetitions: int) -> Tensor:
 def build_attention_mask(
     attention_mask: Tensor | None,
     batch_size: int,
-    sequence_length: int,
+    query_length: int,
+    key_value_length: int,
+    past_length: int,
     device: torch.device,
 ) -> Tensor:
-    causal = torch.ones(sequence_length, sequence_length, dtype=torch.bool, device=device).tril()
-    causal = causal.view(1, 1, sequence_length, sequence_length)
+    query_positions = torch.arange(
+        past_length, past_length + query_length, device=device
+    ).unsqueeze(-1)
+    key_positions = torch.arange(key_value_length, device=device).unsqueeze(0)
+    causal = (key_positions <= query_positions).view(1, 1, query_length, key_value_length)
     if attention_mask is None:
         return causal.expand(batch_size, -1, -1, -1)
     if attention_mask.ndim == 2:
-        if attention_mask.shape != (batch_size, sequence_length):
-            raise ValueError("2D attention_mask must have shape (batch, sequence)")
+        if attention_mask.shape != (batch_size, key_value_length):
+            raise ValueError("2D attention_mask must have shape (batch, key/value sequence)")
         key_mask = attention_mask.to(device=device, dtype=torch.bool)[:, None, None, :]
         return causal & key_mask
     if attention_mask.ndim == 4:
+        if attention_mask.shape[-2:] != (query_length, key_value_length):
+            raise ValueError("4D attention_mask has incompatible query/key dimensions")
         return causal & attention_mask.to(device=device, dtype=torch.bool)
     raise ValueError("attention_mask must be 2D or 4D")
 
@@ -103,6 +117,7 @@ class GroupedQueryAttention(nn.Module):
         self.num_key_value_heads = config.num_key_value_heads
         self.head_dim = config.head_dim
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+        self.attention_backend = config.attention_backend
 
         self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
         self.k_proj = nn.Linear(
@@ -114,37 +129,81 @@ class GroupedQueryAttention(nn.Module):
         self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         self.rotary_emb = RotaryEmbedding(self.head_dim, config.rope_theta)
 
-    def forward(self, hidden_states: Tensor, attention_mask: Tensor | None = None) -> Tensor:
-        batch_size, sequence_length, _ = hidden_states.shape
+    def forward(
+        self,
+        hidden_states: Tensor,
+        attention_mask: Tensor | None = None,
+        past_key_value: tuple[Tensor, Tensor] | None = None,
+        use_cache: bool = False,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor] | None]:
+        batch_size, query_length, _ = hidden_states.shape
         query = self.q_proj(hidden_states).view(
-            batch_size, sequence_length, self.num_heads, self.head_dim
+            batch_size, query_length, self.num_heads, self.head_dim
         )
         key = self.k_proj(hidden_states).view(
-            batch_size, sequence_length, self.num_key_value_heads, self.head_dim
+            batch_size, query_length, self.num_key_value_heads, self.head_dim
         )
         value = self.v_proj(hidden_states).view(
-            batch_size, sequence_length, self.num_key_value_heads, self.head_dim
+            batch_size, query_length, self.num_key_value_heads, self.head_dim
         )
         query = query.transpose(1, 2)
         key = key.transpose(1, 2)
         value = value.transpose(1, 2)
 
-        cos, sin = self.rotary_emb(query)
+        past_length = 0 if past_key_value is None else past_key_value[0].shape[-2]
+        if attention_mask is not None and attention_mask.ndim == 2:
+            position_ids = attention_mask.long().cumsum(dim=-1) - 1
+            position_ids = position_ids.masked_fill(attention_mask == 0, 0)
+            position_ids = position_ids[:, -query_length:]
+        else:
+            position_ids = torch.arange(
+                past_length,
+                past_length + query_length,
+                device=hidden_states.device,
+            ).unsqueeze(0)
+            position_ids = position_ids.expand(batch_size, -1)
+        cos, sin = self.rotary_emb(query, position_ids)
         query, key = apply_rotary_pos_emb(query, key, cos, sin)
-        key = repeat_kv(key, self.num_key_value_groups)
-        value = repeat_kv(value, self.num_key_value_groups)
+
+        if past_key_value is not None:
+            past_key, past_value = past_key_value
+            if past_key.shape[:2] != (batch_size, self.num_key_value_heads):
+                raise ValueError("past key/value cache has incompatible batch or head dimensions")
+            key = torch.cat((past_key, key), dim=-2)
+            value = torch.cat((past_value, value), dim=-2)
+        present_key_value = (key, value) if use_cache else None
+        key_value_length = key.shape[-2]
 
         allowed = build_attention_mask(
-            attention_mask, batch_size, sequence_length, hidden_states.device
+            attention_mask,
+            batch_size,
+            query_length,
+            key_value_length,
+            past_length,
+            hidden_states.device,
         )
-        scores = torch.matmul(query, key.transpose(-1, -2)) * (self.head_dim**-0.5)
-        scores = scores.masked_fill(~allowed, torch.finfo(scores.dtype).min)
-        probabilities = F.softmax(scores.float(), dim=-1).to(query.dtype)
-        context = torch.matmul(probabilities, value)
+
+        if self.attention_backend == "sdpa":
+            context = F.scaled_dot_product_attention(
+                query,
+                key,
+                value,
+                attn_mask=allowed,
+                dropout_p=0.0,
+                is_causal=False,
+                enable_gqa=True,
+            )
+        else:
+            repeated_key = repeat_kv(key, self.num_key_value_groups)
+            repeated_value = repeat_kv(value, self.num_key_value_groups)
+            scores = torch.matmul(query, repeated_key.transpose(-1, -2)) * (self.head_dim**-0.5)
+            scores = scores.masked_fill(~allowed, torch.finfo(scores.dtype).min)
+            probabilities = F.softmax(scores.float(), dim=-1).to(query.dtype)
+            context = torch.matmul(probabilities, repeated_value)
         context = (
-            context.transpose(1, 2).contiguous().view(batch_size, sequence_length, self.hidden_size)
+            context.transpose(1, 2).contiguous().view(batch_size, query_length, self.hidden_size)
         )
-        return self.o_proj(context)
+        return self.o_proj(context), present_key_value
 
 
 class SwiGLU(nn.Module):
@@ -166,11 +225,22 @@ class DecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
 
-    def forward(self, hidden_states: Tensor, attention_mask: Tensor | None = None) -> Tensor:
-        hidden_states = hidden_states + self.self_attn(
-            self.input_layernorm(hidden_states), attention_mask
+    def forward(
+        self,
+        hidden_states: Tensor,
+        attention_mask: Tensor | None = None,
+        past_key_value: tuple[Tensor, Tensor] | None = None,
+        use_cache: bool = False,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor] | None]:
+        attention_output, present_key_value = self.self_attn(
+            self.input_layernorm(hidden_states),
+            attention_mask,
+            past_key_value,
+            use_cache,
         )
-        return hidden_states + self.mlp(self.post_attention_layernorm(hidden_states))
+        hidden_states = hidden_states + attention_output
+        hidden_states = hidden_states + self.mlp(self.post_attention_layernorm(hidden_states))
+        return hidden_states, present_key_value
 
 
 class SmolLMModel(nn.Module):
@@ -181,13 +251,33 @@ class SmolLMModel(nn.Module):
         self.layers = nn.ModuleList(DecoderLayer(config) for _ in range(config.num_hidden_layers))
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
 
-    def forward(self, input_ids: Tensor, attention_mask: Tensor | None = None) -> Tensor:
+    def forward(
+        self,
+        input_ids: Tensor,
+        attention_mask: Tensor | None = None,
+        past_key_values: tuple[tuple[Tensor, Tensor], ...] | None = None,
+        use_cache: bool = False,
+    ) -> BaseModelOutput:
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape (batch, sequence)")
+        if past_key_values is not None and len(past_key_values) != len(self.layers):
+            raise ValueError("past_key_values must contain one entry per decoder layer")
         hidden_states = self.embed_tokens(input_ids)
-        for layer in self.layers:
-            hidden_states = layer(hidden_states, attention_mask)
-        return self.norm(hidden_states)
+        next_cache = [] if use_cache else None
+        for index, layer in enumerate(self.layers):
+            past_key_value = None if past_key_values is None else past_key_values[index]
+            hidden_states, present_key_value = layer(
+                hidden_states,
+                attention_mask,
+                past_key_value,
+                use_cache,
+            )
+            if next_cache is not None and present_key_value is not None:
+                next_cache.append(present_key_value)
+        return BaseModelOutput(
+            last_hidden_state=self.norm(hidden_states),
+            past_key_values=None if next_cache is None else tuple(next_cache),
+        )
 
 
 class SmolLMForCausalLM(nn.Module):
@@ -207,9 +297,18 @@ class SmolLMForCausalLM(nn.Module):
         input_ids: Tensor,
         attention_mask: Tensor | None = None,
         labels: Tensor | None = None,
+        past_key_values: tuple[tuple[Tensor, Tensor], ...] | None = None,
+        use_cache: bool = False,
     ) -> CausalLMOutput:
-        hidden_states = self.model(input_ids, attention_mask)
-        logits = self.lm_head(hidden_states).float()
+        if labels is not None and past_key_values is not None:
+            raise ValueError("labels cannot be used with a past key/value cache")
+        model_output = self.model(
+            input_ids,
+            attention_mask,
+            past_key_values,
+            use_cache,
+        )
+        logits = self.lm_head(model_output.last_hidden_state).float()
         loss = None
         if labels is not None:
             shift_logits = logits[:, :-1, :].contiguous()
@@ -219,4 +318,8 @@ class SmolLMForCausalLM(nn.Module):
                 shift_labels.view(-1),
                 ignore_index=-100,
             )
-        return CausalLMOutput(logits=logits, loss=loss)
+        return CausalLMOutput(
+            logits=logits,
+            loss=loss,
+            past_key_values=model_output.past_key_values,
+        )
