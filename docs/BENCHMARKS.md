@@ -19,6 +19,19 @@ The primary comparison used float32 inference on Apple MPS with PyTorch 2.13.0, 
 
 The optimized SDPA backend was evaluated over the same 8,160 predictions. It retained 100% top-1 agreement and produced perplexity 33.7002361723, a relative difference of 0.0000052% from the Hugging Face reference. Its structured result is stored in [`benchmarks/results/reference_parity_sdpa.json`](../benchmarks/results/reference_parity_sdpa.json).
 
+### Generation parity
+
+Greedy generation was compared against Hugging Face `generate` on 16 WikiText-2 prompts with lengths spread from 8 to 256 tokens, left-padded into one batch, generating up to 64 tokens each. All four decoding configurations reproduced the reference output tensor exactly, including padding, and each batched sequence also matched the same prompt generated on its own:
+
+| Configuration | Sequences matching reference | Batched = individual |
+| --- | ---: | ---: |
+| Eager attention, no cache | 16 / 16 | 16 / 16 |
+| Eager attention, KV cache | 16 / 16 | 16 / 16 |
+| SDPA, KV cache | 16 / 16 | 16 / 16 |
+| SDPA, static KV cache | 16 / 16 | 16 / 16 |
+
+With the model's EOS token, all 1,024 generated tokens matched. To exercise per-row stopping, a second run treated `.` as EOS: five rows stopped after 1, 4, 6, 8, and 25 tokens while the others continued, and all 748 generated tokens and the trailing padding still matched. Run `uv run python benchmarks/generation_parity.py` (add `--stop-text .` for the early-stopping run); results are stored in [`generation_parity.json`](../benchmarks/results/generation_parity.json) and [`generation_parity_stop_period.json`](../benchmarks/results/generation_parity_stop_period.json).
+
 ## 2. LoRA adaptation
 
 ### Configuration
@@ -78,9 +91,33 @@ The generated-token SHA-256 hashes match exactly across both paths. Separately, 
 
 The benchmark runner is [`benchmarks/inference_performance.py`](../benchmarks/inference_performance.py), and machine-readable measurements are stored under [`benchmarks/results`](../benchmarks/results).
 
+## 5. Batched generation
+
+Profiling batched generation showed that peak memory grew far faster than the KV cache. Two causes accounted for most of it. First, the forward pass projected every prompt position onto the vocabulary, so a batch of 8 × 512-token prompts materialized a 768 MiB float32 logits tensor to pick one next token per row. Second, the `torch.cat` cache allocated many small per-layer tensors that the MPS caching allocator placed in larger freed blocks: a 202 MiB cache occupied 1,330 MiB. Generation now projects only the last position, and `StaticKVCache` allocates every layer's cache once for the full generation length and writes into it in place.
+
+The sweep generated 64 tokens per prompt for batch sizes 1–8 and prompt lengths 128–512 on Apple M4 Pro (MPS, float32). The baseline is the previous commit (SDPA with the `torch.cat` cache and full-sequence logits); Hugging Face `generate` with SDPA attention is included as an external reference. Throughput counts generated tokens across the batch, including prefill time. Results are medians of three repetitions after one warmup, without `torch.compile`.
+
+| Prompt | Batch | Baseline tok/s | Optimized tok/s | HF `generate` tok/s | Speedup | Baseline peak | Optimized peak | Peak reduction |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 128 | 1 | 158.7 | 173.2 | 100.7 | 1.09× | 589 MiB | 523 MiB | 11.3% |
+| 128 | 8 | 714.3 | 810.2 | 518.1 | 1.13× | 798 MiB | 591 MiB | 26.0% |
+| 256 | 4 | 451.1 | 509.3 | 293.1 | 1.13× | 806 MiB | 580 MiB | 28.0% |
+| 256 | 8 | 605.8 | 704.0 | 435.5 | 1.16× | 1,747 MiB | 646 MiB | 63.1% |
+| 512 | 1 | 140.9 | 156.8 | 80.5 | 1.11× | 674 MiB | 544 MiB | 19.4% |
+| 512 | 4 | 351.4 | 418.9 | 255.3 | 1.19× | 1,737 MiB | 635 MiB | 63.5% |
+| 512 | 8 | 405.7 | 544.7 | 365.2 | **1.34×** | 2,953 MiB | 757 MiB | **74.4%** |
+
+Peak memory includes the 513 MiB of float32 weights; excluding weights, peak activation and cache memory fell by 72.7–90.1% across all 12 cells. At batch 8 × 512 tokens, inter-token latency fell from 13.21 ms to 9.30 ms. Of the 1.34× speedup there, 1.10× came from last-position logits alone and the rest from the static cache. The optimized path was 1.49–1.95× faster than Hugging Face `generate` across the grid. Its peak memory ranged from 1.3% higher to 24.9% lower than `generate`, with the largest savings on the largest batches: 13.8–24.9% lower at 2,048 or more prompt tokens per batch.
+
+Generated tokens were identical across the baseline, the optimized path, and Hugging Face `generate` in every cell. A ragged sweep, in which each batch's prompts span half to all of the prompt length and are left-padded, gave the same memory reductions, speedups of 1.00–1.26×, and identical tokens.
+
+Run `uv run python benchmarks/inference_sweep.py --mode sdpa_static_cache` (add `--ragged` for mixed lengths; `--mode sdpa_kv_cache` or `hf_generate` for the comparisons). Per-cell measurements are stored under [`benchmarks/results/sweep`](../benchmarks/results/sweep) and summarized in [`inference_sweep_summary.json`](../benchmarks/results/inference_sweep_summary.json).
+
 ## Evaluation scope
 
 - Results represent single seeded runs; multi-seed confidence intervals remain future work.
 - BLEU does not fully capture grammatical correctness or semantic preservation.
 - Heuristic preference generation can introduce model and ranking bias; human evaluation would strengthen the alignment analysis.
+- MPS does not expose an allocator high-water mark, so peak memory on MPS is sampled inside every attention block and after the vocabulary projection; short-lived kernel workspaces between samples are not captured. On CUDA the sweep uses `torch.cuda.max_memory_allocated`.
+- The batched sweep stops at batch 8 × 512 tokens to stay within the memory budget of the 24 GB development machine.
 - Explicit attention math prioritizes auditability and test coverage over fused-kernel throughput.

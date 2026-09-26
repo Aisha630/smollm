@@ -9,17 +9,63 @@ from torch import Tensor, nn
 from smollm_lab.config import SmolLMConfig
 
 
+class StaticKVCache:
+    """Key/value buffers preallocated for a full generation and written in place.
+
+    Growing a cache with ``torch.cat`` copies every layer's keys and values at each decoding step,
+    and each of those many small tensors can be placed in a much larger freed block by the caching
+    allocator. This cache makes one allocation for every layer's ``max_length`` positions and
+    exposes the filled prefix as a view.
+    """
+
+    def __init__(
+        self,
+        config: SmolLMConfig,
+        batch_size: int,
+        max_length: int,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        shape = (batch_size, config.num_key_value_heads, max_length, config.head_dim)
+        self.buffer = torch.zeros((2, config.num_hidden_layers, *shape), device=device, dtype=dtype)
+        self.keys = [self.buffer[0, index] for index in range(config.num_hidden_layers)]
+        self.values = [self.buffer[1, index] for index in range(config.num_hidden_layers)]
+        self.length = 0
+
+    def __len__(self) -> int:
+        return len(self.keys)
+
+    @property
+    def max_length(self) -> int:
+        return self.keys[0].shape[-2]
+
+    def update(self, layer_index: int, key: Tensor, value: Tensor) -> tuple[Tensor, Tensor]:
+        """Write new positions for one layer and return that layer's filled keys and values."""
+
+        end = self.length + key.shape[-2]
+        if end > self.max_length:
+            raise ValueError("static key/value cache is full")
+        if key.shape[:2] != self.keys[layer_index].shape[:2]:
+            raise ValueError("static key/value cache has incompatible batch or head dimensions")
+        self.keys[layer_index][:, :, self.length : end] = key
+        self.values[layer_index][:, :, self.length : end] = value
+        return self.keys[layer_index][:, :, :end], self.values[layer_index][:, :, :end]
+
+
+KeyValueCache = tuple[tuple[Tensor, Tensor], ...] | StaticKVCache
+
+
 @dataclass
 class CausalLMOutput:
     logits: Tensor
     loss: Tensor | None = None
-    past_key_values: tuple[tuple[Tensor, Tensor], ...] | None = None
+    past_key_values: KeyValueCache | None = None
 
 
 @dataclass
 class BaseModelOutput:
     last_hidden_state: Tensor
-    past_key_values: tuple[tuple[Tensor, Tensor], ...] | None = None
+    past_key_values: KeyValueCache | None = None
 
 
 class RMSNorm(nn.Module):
@@ -101,17 +147,23 @@ def build_attention_mask(
         if attention_mask.shape != (batch_size, key_value_length):
             raise ValueError("2D attention_mask must have shape (batch, key/value sequence)")
         key_mask = attention_mask.to(device=device, dtype=torch.bool)[:, None, None, :]
-        return causal & key_mask
-    if attention_mask.ndim == 4:
+        allowed = causal & key_mask
+    elif attention_mask.ndim == 4:
         if attention_mask.shape[-2:] != (query_length, key_value_length):
             raise ValueError("4D attention_mask has incompatible query/key dimensions")
-        return causal & attention_mask.to(device=device, dtype=torch.bool)
-    raise ValueError("attention_mask must be 2D or 4D")
+        allowed = causal & attention_mask.to(device=device, dtype=torch.bool)
+    else:
+        raise ValueError("attention_mask must be 2D or 4D")
+    # A left-padding query would otherwise attend to nothing, which some attention kernels turn
+    # into NaNs. Letting it attend to itself keeps its (ignored) output finite.
+    diagonal = (key_positions == query_positions).view(1, 1, query_length, key_value_length)
+    return allowed | diagonal
 
 
 class GroupedQueryAttention(nn.Module):
-    def __init__(self, config: SmolLMConfig) -> None:
+    def __init__(self, config: SmolLMConfig, layer_index: int = 0) -> None:
         super().__init__()
+        self.layer_index = layer_index
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.num_key_value_heads = config.num_key_value_heads
@@ -133,7 +185,7 @@ class GroupedQueryAttention(nn.Module):
         self,
         hidden_states: Tensor,
         attention_mask: Tensor | None = None,
-        past_key_value: tuple[Tensor, Tensor] | None = None,
+        past_key_value: tuple[Tensor, Tensor] | StaticKVCache | None = None,
         use_cache: bool = False,
     ) -> tuple[Tensor, tuple[Tensor, Tensor] | None]:
         batch_size, query_length, _ = hidden_states.shape
@@ -150,7 +202,12 @@ class GroupedQueryAttention(nn.Module):
         key = key.transpose(1, 2)
         value = value.transpose(1, 2)
 
-        past_length = 0 if past_key_value is None else past_key_value[0].shape[-2]
+        if past_key_value is None:
+            past_length = 0
+        elif isinstance(past_key_value, StaticKVCache):
+            past_length = past_key_value.length
+        else:
+            past_length = past_key_value[0].shape[-2]
         if attention_mask is not None and attention_mask.ndim == 2:
             position_ids = attention_mask.long().cumsum(dim=-1) - 1
             position_ids = position_ids.masked_fill(attention_mask == 0, 0)
@@ -165,13 +222,19 @@ class GroupedQueryAttention(nn.Module):
         cos, sin = self.rotary_emb(query, position_ids)
         query, key = apply_rotary_pos_emb(query, key, cos, sin)
 
-        if past_key_value is not None:
-            past_key, past_value = past_key_value
-            if past_key.shape[:2] != (batch_size, self.num_key_value_heads):
-                raise ValueError("past key/value cache has incompatible batch or head dimensions")
-            key = torch.cat((past_key, key), dim=-2)
-            value = torch.cat((past_value, value), dim=-2)
-        present_key_value = (key, value) if use_cache else None
+        if isinstance(past_key_value, StaticKVCache):
+            key, value = past_key_value.update(self.layer_index, key, value)
+            present_key_value = None
+        else:
+            if past_key_value is not None:
+                past_key, past_value = past_key_value
+                if past_key.shape[:2] != (batch_size, self.num_key_value_heads):
+                    raise ValueError(
+                        "past key/value cache has incompatible batch or head dimensions"
+                    )
+                key = torch.cat((past_key, key), dim=-2)
+                value = torch.cat((past_value, value), dim=-2)
+            present_key_value = (key, value) if use_cache else None
         key_value_length = key.shape[-2]
 
         allowed = build_attention_mask(
@@ -218,9 +281,9 @@ class SwiGLU(nn.Module):
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self, config: SmolLMConfig) -> None:
+    def __init__(self, config: SmolLMConfig, layer_index: int = 0) -> None:
         super().__init__()
-        self.self_attn = GroupedQueryAttention(config)
+        self.self_attn = GroupedQueryAttention(config, layer_index)
         self.mlp = SwiGLU(config.hidden_size, config.intermediate_size)
         self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
@@ -229,7 +292,7 @@ class DecoderLayer(nn.Module):
         self,
         hidden_states: Tensor,
         attention_mask: Tensor | None = None,
-        past_key_value: tuple[Tensor, Tensor] | None = None,
+        past_key_value: tuple[Tensor, Tensor] | StaticKVCache | None = None,
         use_cache: bool = False,
     ) -> tuple[Tensor, tuple[Tensor, Tensor] | None]:
         attention_output, present_key_value = self.self_attn(
@@ -248,14 +311,16 @@ class SmolLMModel(nn.Module):
         super().__init__()
         self.config = config
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList(DecoderLayer(config) for _ in range(config.num_hidden_layers))
+        self.layers = nn.ModuleList(
+            DecoderLayer(config, index) for index in range(config.num_hidden_layers)
+        )
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
 
     def forward(
         self,
         input_ids: Tensor,
         attention_mask: Tensor | None = None,
-        past_key_values: tuple[tuple[Tensor, Tensor], ...] | None = None,
+        past_key_values: KeyValueCache | None = None,
         use_cache: bool = False,
     ) -> BaseModelOutput:
         if input_ids.ndim != 2:
@@ -263,9 +328,13 @@ class SmolLMModel(nn.Module):
         if past_key_values is not None and len(past_key_values) != len(self.layers):
             raise ValueError("past_key_values must contain one entry per decoder layer")
         hidden_states = self.embed_tokens(input_ids)
-        next_cache = [] if use_cache else None
+        static_cache = past_key_values if isinstance(past_key_values, StaticKVCache) else None
+        next_cache = [] if use_cache and static_cache is None else None
         for index, layer in enumerate(self.layers):
-            past_key_value = None if past_key_values is None else past_key_values[index]
+            if static_cache is not None:
+                past_key_value = static_cache
+            else:
+                past_key_value = None if past_key_values is None else past_key_values[index]
             hidden_states, present_key_value = layer(
                 hidden_states,
                 attention_mask,
@@ -274,9 +343,14 @@ class SmolLMModel(nn.Module):
             )
             if next_cache is not None and present_key_value is not None:
                 next_cache.append(present_key_value)
+        if static_cache is not None:
+            static_cache.length += input_ids.shape[1]
+            next_cache = static_cache
+        elif next_cache is not None:
+            next_cache = tuple(next_cache)
         return BaseModelOutput(
             last_hidden_state=self.norm(hidden_states),
-            past_key_values=None if next_cache is None else tuple(next_cache),
+            past_key_values=next_cache,
         )
 
 
@@ -297,18 +371,28 @@ class SmolLMForCausalLM(nn.Module):
         input_ids: Tensor,
         attention_mask: Tensor | None = None,
         labels: Tensor | None = None,
-        past_key_values: tuple[tuple[Tensor, Tensor], ...] | None = None,
+        past_key_values: KeyValueCache | None = None,
         use_cache: bool = False,
+        logits_to_keep: int = 0,
     ) -> CausalLMOutput:
+        """Run the model; ``logits_to_keep=n`` projects only the last ``n`` positions."""
+
         if labels is not None and past_key_values is not None:
             raise ValueError("labels cannot be used with a past key/value cache")
+        if logits_to_keep < 0:
+            raise ValueError("logits_to_keep must be non-negative")
+        if labels is not None and logits_to_keep:
+            raise ValueError("labels require logits for every position")
         model_output = self.model(
             input_ids,
             attention_mask,
             past_key_values,
             use_cache,
         )
-        logits = self.lm_head(model_output.last_hidden_state).float()
+        hidden_states = model_output.last_hidden_state
+        if logits_to_keep:
+            hidden_states = hidden_states[:, -logits_to_keep:, :]
+        logits = self.lm_head(hidden_states).float()
         loss = None
         if labels is not None:
             shift_logits = logits[:, :-1, :].contiguous()
