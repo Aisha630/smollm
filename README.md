@@ -28,12 +28,26 @@ The core architecture is implemented directly in PyTorch: RMSNorm, rotary positi
 | ---------------- | -----------------------------------: | ------------------------------------------------------ |
 | Reference parity |          Perplexity: 33.7002 = 33.7002 | 8,160 WikiText-2 predictions; 100% top-1 agreement     |
 | Inference optimization |             8.50× decode throughput | SDPA + native GQA + KV cache + compilation             |
+| Batched generation | 1.34× throughput, 74% lower peak memory | Batch 8 × 512-token prompts; static KV cache + last-position logits |
+| Generation parity | 16 / 16 sequences identical to HF `generate` | Left-padded prompts of 8–256 tokens, all cache modes |
 | LoRA fine-tuning | 990,720 trainable parameters (0.73%) | Rank 4 adapters across attention and MLP projections   |
 | LoRA validation  |               Best perplexity: 22.15 | 3,000-example Dolly subset; best checkpoint at epoch 2 |
 | DPO alignment    |      Preference accuracy: 76% → 87% | 100-example held-out preference split                  |
 | GEC alignment    |               BLEU: 0.4722 → 0.4808 | 485-example CoEdIT validation split, SFT → DPO        |
 
 Metrics use fixed evaluation splits. Training runs used GPU acceleration, and reference parity was independently verified on both CPU and Apple MPS. See [Benchmarks](docs/BENCHMARKS.md) for configurations, per-epoch metrics, and evaluation scope.
+
+### Batched generation
+
+Profiling showed that batched generation spent most of its peak memory on two things: vocabulary logits for every prompt position, and a concatenated KV cache fragmented across oversized allocator blocks. Generation now projects only the last position and writes into a single-allocation static KV cache. Measured on Apple M4 Pro (MPS, float32), generating 64 tokens per prompt:
+
+| Batch × prompt | Previous tok/s | Optimized tok/s | HF `generate` tok/s | Previous peak | Optimized peak |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 8 × 128 | 714 | 810 (1.13×) | 518 | 798 MiB | 591 MiB (−26%) |
+| 8 × 256 | 606 | 704 (1.16×) | 436 | 1,747 MiB | 646 MiB (−63%) |
+| 8 × 512 | 406 | 545 (1.34×) | 365 | 2,953 MiB | 757 MiB (−74%) |
+
+Across batch sizes 1–8 and prompt lengths 128–512, throughput improved 1.08–1.34× and peak memory fell 11–74%, while the optimized path ran 1.49–1.95× faster than Hugging Face `generate`. Generated tokens were identical to both the previous implementation and Hugging Face `generate` in every configuration, including batches of mixed-length, left-padded prompts.
 
 Reproduce the reference parity comparison with:
 
@@ -49,11 +63,20 @@ uv run python benchmarks/inference_performance.py --mode eager_no_cache
 uv run python benchmarks/inference_performance.py --mode sdpa_kv_cache --compile
 ```
 
+Reproduce the batched generation sweep and the Hugging Face generation parity check with:
+
+```bash
+uv run python benchmarks/inference_sweep.py --mode sdpa_static_cache
+uv run python benchmarks/generation_parity.py
+```
+
 ## Engineering highlights
 
 - Device-safe rotary embeddings and combined causal/padding masks
 - Fused SDPA with native grouped-query attention, avoiding materialized KV-head copies
 - Per-layer KV caching for incremental autoregressive decoding
+- Batched generation over left-padded, variable-length prompts with per-row EOS handling
+- Single-allocation static KV cache and last-position logits, cutting peak generation memory by up to 74%
 - Optional `torch.compile` and float16 inference paths with output-parity checks
 - Weight tying between token embeddings and the language-model head
 - LoRA injection by module name, frozen-base training, and numerically verified merge/unload
@@ -106,10 +129,10 @@ src/smollm_lab/
 ├── modeling.py      # Transformer architecture
 ├── lora.py          # Adapter injection and merging
 ├── dpo.py           # Preference objective and metrics
-├── generation.py    # Greedy autoregressive decoding
+├── generation.py    # Batched greedy decoding
 └── cli.py           # CPU-friendly smoke test
 tests/               # Behavioral and numerical tests
-benchmarks/          # Reproducible reference-parity runner and results
+benchmarks/          # Parity, generation, and performance runners with results
 docs/                # Architecture and benchmark details
 ```
 

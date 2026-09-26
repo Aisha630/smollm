@@ -26,6 +26,15 @@ Each decoder layer can return its rotated keys and values as a cache. During gen
 
 Cached and uncached generation are required to produce identical token sequences in the test suite. The cache stores three KV heads per layer rather than nine expanded heads, preserving the memory advantage of grouped-query attention.
 
+## Batched generation
+
+Prompts of different lengths are left-padded into one batch. Position IDs are derived from the attention mask, so every prompt's first real token is position 0 regardless of padding. A padding query that has no valid key is allowed to attend to itself, which keeps its ignored output finite on every attention kernel. Once a row emits EOS, its remaining positions are filled with the padding token while other rows continue, matching Hugging Face generation.
+
+Two allocation choices keep peak memory close to weights plus cache:
+
+- Generation projects only the last position onto the 49,152-token vocabulary. Projecting every prompt position would materialize a `batch × prompt × vocabulary` float32 tensor during prefill.
+- `StaticKVCache` makes one allocation for every layer's keys and values for the full generation length, then writes new positions in place. The default cache instead grows with `torch.cat`, which copies each layer's cache at every step. On MPS, the caching allocator also places those many small cache tensors in larger blocks freed by attention temporaries, so a 202 MiB cache occupied 1,330 MiB in profiling. One large allocation cannot be placed that way.
+
 ## Parameter-efficient adaptation
 
 For a frozen projection `W`, LoRA learns two matrices with rank `r`:
