@@ -1,0 +1,160 @@
+{
+  "baseline": "before_sdpa_kv_cache.json (HEAD aaa6a6d: SDPA + torch.cat KV cache, full-sequence logits)",
+  "cells": [
+    {
+      "activation_and_cache_memory_reduction_percent": 87.12944989010636,
+      "batch_size": 1,
+      "context_length": 128,
+      "peak_memory_reduction_percent": 11.251414962220718,
+      "ragged_peak_memory_reduction_percent": 11.254778120372588,
+      "ragged_throughput_speedup": 1.0007305249253569,
+      "throughput_speedup": 1.091527581336364,
+      "throughput_speedup_vs_hf": 1.7208916615466712
+    },
+    {
+      "activation_and_cache_memory_reduction_percent": 76.86541875801906,
+      "batch_size": 2,
+      "context_length": 128,
+      "peak_memory_reduction_percent": 10.84525425626599,
+      "ragged_peak_memory_reduction_percent": 10.844728426149096,
+      "ragged_throughput_speedup": 1.0681792040122668,
+      "throughput_speedup": 1.1278377478371677,
+      "throughput_speedup_vs_hf": 1.8174164811012008
+    },
+    {
+      "activation_and_cache_memory_reduction_percent": 72.6656858912368,
+      "batch_size": 4,
+      "context_length": 128,
+      "peak_memory_reduction_percent": 15.783569624128369,
+      "ragged_peak_memory_reduction_percent": 15.782620856506636,
+      "ragged_throughput_speedup": 1.0914338297192943,
+      "throughput_speedup": 1.0778722070884912,
+      "throughput_speedup_vs_hf": 1.6753352845174647
+    },
+    {
+      "activation_and_cache_memory_reduction_percent": 72.72407537353027,
+      "batch_size": 8,
+      "context_length": 128,
+      "peak_memory_reduction_percent": 25.985725935640424,
+      "ragged_peak_memory_reduction_percent": 25.986513704157034,
+      "ragged_throughput_speedup": 1.1073395536383894,
+      "throughput_speedup": 1.1343239637451232,
+      "throughput_speedup_vs_hf": 1.5637487474574066
+    },
+    {
+      "activation_and_cache_memory_reduction_percent": 80.07211978155023,
+      "batch_size": 1,
+      "context_length": 256,
+      "peak_memory_reduction_percent": 11.27397236754646,
+      "ragged_peak_memory_reduction_percent": 11.276259151613255,
+      "ragged_throughput_speedup": 1.0444593690950617,
+      "throughput_speedup": 1.0982500643336723,
+      "throughput_speedup_vs_hf": 1.7547718888962367
+    },
+    {
+      "activation_and_cache_memory_reduction_percent": 76.6121273753402,
+      "batch_size": 2,
+      "context_length": 256,
+      "peak_memory_reduction_percent": 16.63886979069288,
+      "ragged_peak_memory_reduction_percent": 16.638820214215322,
+      "ragged_throughput_speedup": 1.1054094926209568,
+      "throughput_speedup": 1.0943983969413,
+      "throughput_speedup_vs_hf": 1.725295851335952
+    },
+    {
+      "activation_and_cache_memory_reduction_percent": 77.24550248566061,
+      "batch_size": 4,
+      "context_length": 256,
+      "peak_memory_reduction_percent": 28.047998545498622,
+      "ragged_peak_memory_reduction_percent": 28.048066538751037,
+      "ragged_throughput_speedup": 1.1233861467270434,
+      "throughput_speedup": 1.128995103196351,
+      "throughput_speedup_vs_hf": 1.737676324167615
+    },
+    {
+      "activation_and_cache_memory_reduction_percent": 89.2759734710736,
+      "batch_size": 8,
+      "context_length": 256,
+      "peak_memory_reduction_percent": 63.05842320513826,
+      "ragged_peak_memory_reduction_percent": 63.06282028015961,
+      "ragged_throughput_speedup": 1.159910823107304,
+      "throughput_speedup": 1.1621562653133806,
+      "throughput_speedup_vs_hf": 1.6163261631978485
+    },
+    {
+      "activation_and_cache_memory_reduction_percent": 81.0722812123417,
+      "batch_size": 1,
+      "context_length": 512,
+      "peak_memory_reduction_percent": 19.36765763475623,
+      "ragged_peak_memory_reduction_percent": 19.368895686949315,
+      "ragged_throughput_speedup": 1.1070898858383027,
+      "throughput_speedup": 1.113167330726865,
+      "throughput_speedup_vs_hf": 1.947072184642677
+    },
+    {
+      "activation_and_cache_memory_reduction_percent": 78.61156523437901,
+      "batch_size": 2,
+      "context_length": 512,
+      "peak_memory_reduction_percent": 28.066319333869906,
+      "ragged_peak_memory_reduction_percent": 28.066671418480738,
+      "ragged_throughput_speedup": 1.1600890789295748,
+      "throughput_speedup": 1.1575999806230826,
+      "throughput_speedup_vs_hf": 1.7937272840116865
+    },
+    {
+      "activation_and_cache_memory_reduction_percent": 90.08449217424574,
+      "batch_size": 4,
+      "context_length": 512,
+      "peak_memory_reduction_percent": 63.47265210709725,
+      "ragged_peak_memory_reduction_percent": 63.478175330907824,
+      "ragged_throughput_speedup": 1.200509526966164,
+      "throughput_speedup": 1.1919718124463983,
+      "throughput_speedup_vs_hf": 1.64059630665106
+    },
+    {
+      "activation_and_cache_memory_reduction_percent": 90.0101066634319,
+      "batch_size": 8,
+      "context_length": 512,
+      "peak_memory_reduction_percent": 74.36620661682896,
+      "ragged_peak_memory_reduction_percent": 74.36632107887097,
+      "ragged_throughput_speedup": 1.2555118906526763,
+      "throughput_speedup": 1.3426127422727705,
+      "throughput_speedup_vs_hf": 1.4916560103297019
+    }
+  ],
+  "grid": {
+    "batch_sizes": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "context_lengths": [
+      128,
+      256,
+      512
+    ],
+    "new_tokens": 64
+  },
+  "largest_cell": {
+    "activation_and_cache_memory_reduction_percent": 90.0101066634319,
+    "batch_size": 8,
+    "context_length": 512,
+    "peak_memory_reduction_percent": 74.36620661682896,
+    "ragged_peak_memory_reduction_percent": 74.36632107887097,
+    "ragged_throughput_speedup": 1.2555118906526763,
+    "throughput_speedup": 1.3426127422727705,
+    "throughput_speedup_vs_hf": 1.4916560103297019
+  },
+  "optimized": "after_sdpa_static_cache.json (single-allocation static KV cache, last-position logits)",
+  "peak_memory_reduction_percent_range": [
+    10.84525425626599,
+    74.36620661682896
+  ],
+  "ragged_tokens_identical_all_cells": true,
+  "throughput_speedup_range": [
+    1.0778722070884912,
+    1.3426127422727705
+  ],
+  "tokens_identical_all_cells": true
+}

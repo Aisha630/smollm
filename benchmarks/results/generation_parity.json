@@ -1,0 +1,87 @@
+{
+  "configurations": {
+    "eager_kv_cache": {
+      "attention_backend": "eager",
+      "batched_matches_individual": 16,
+      "full_output_identical": true,
+      "reference_tokens_compared": 1024,
+      "reference_tokens_matched": 1024,
+      "sequences_matching_reference": 16,
+      "use_cache": true
+    },
+    "eager_no_cache": {
+      "attention_backend": "eager",
+      "batched_matches_individual": 16,
+      "full_output_identical": true,
+      "reference_tokens_compared": 1024,
+      "reference_tokens_matched": 1024,
+      "sequences_matching_reference": 16,
+      "use_cache": false
+    },
+    "sdpa_kv_cache": {
+      "attention_backend": "sdpa",
+      "batched_matches_individual": 16,
+      "full_output_identical": true,
+      "reference_tokens_compared": 1024,
+      "reference_tokens_matched": 1024,
+      "sequences_matching_reference": 16,
+      "use_cache": true
+    },
+    "sdpa_static_cache": {
+      "attention_backend": "sdpa",
+      "batched_matches_individual": 16,
+      "cache_implementation": "static",
+      "full_output_identical": true,
+      "reference_tokens_compared": 1024,
+      "reference_tokens_matched": 1024,
+      "sequences_matching_reference": 16,
+      "use_cache": true
+    }
+  },
+  "device": "mps",
+  "dtype": "float32",
+  "eos_token_id": 0,
+  "model_id": "HuggingFaceTB/SmolLM-135M",
+  "model_revision": "1d461723eec654e65efdc40cf49301c89c0c92f4",
+  "new_tokens": 64,
+  "num_prompts": 16,
+  "prompt_lengths": [
+    8,
+    24,
+    41,
+    57,
+    74,
+    90,
+    107,
+    123,
+    140,
+    156,
+    173,
+    189,
+    206,
+    222,
+    239,
+    256
+  ],
+  "reference_generated_lengths": [
+    64,
+    64,
+    64,
+    64,
+    64,
+    64,
+    64,
+    64,
+    64,
+    64,
+    64,
+    64,
+    64,
+    64,
+    64,
+    64
+  ],
+  "reference_rows_stopping_at_eos": 0,
+  "torch_version": "2.13.0",
+  "transformers_version": "4.57.6"
+}
